@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2010-2014 Roger Light <roger@atchoo.org>
+Copyright (c) 2010-2016 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License v1.0
@@ -105,6 +105,59 @@ int topic_matches_sub(const char *sub, const char *topic, bool *result)
 {
 	return mosquitto_topic_matches_sub(sub, topic, result);
 }
+
+int validate_utf8(const char *str, int len)
+{
+	return mosquitto_validate_utf8(str, len);
+}
+
+int subscribe_simple(
+		struct mosquitto_message **messages,
+		int msg_count,
+		bool retained,
+		const char *topic,
+		int qos,
+		const char *host,
+		int port,
+		const char *client_id,
+		int keepalive,
+		bool clean_session,
+		const char *username,
+		const char *password,
+		const struct libmosquitto_will *will,
+		const struct libmosquitto_tls *tls)
+{
+	return mosquitto_subscribe_simple(
+			messages, msg_count, retained,
+			topic, qos,
+			host, port, client_id, keepalive, clean_session,
+			username, password,
+			will, tls);
+}
+
+mosqpp_EXPORT int subscribe_callback(
+		int (*callback)(struct mosquitto *, void *, const struct mosquitto_message *),
+		void *userdata,
+		const char *topic,
+		int qos,
+		const char *host,
+		int port,
+		const char *client_id,
+		int keepalive,
+		bool clean_session,
+		const char *username,
+		const char *password,
+		const struct libmosquitto_will *will,
+		const struct libmosquitto_tls *tls)
+{
+	return mosquitto_subscribe_callback(
+			callback, userdata,
+			topic, qos,
+			host, port, client_id, keepalive, clean_session,
+			username, password,
+			will, tls);
+}
+
 
 mosquittopp::mosquittopp(const char *id, bool clean_session)
 {

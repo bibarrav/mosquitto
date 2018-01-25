@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2013,2014 Roger Light <roger@atchoo.org>
+Copyright (c) 2013-2016 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License v1.0
@@ -30,14 +30,15 @@ Contributors:
 #include <openssl/ssl.h>
 
 #ifdef WITH_BROKER
-#  include "mosquitto_broker.h"
+#  include "mosquitto_broker_internal.h"
 #endif
 #include "mosquitto_internal.h"
+#include "logging_mosq.h"
 #include "tls_mosq.h"
 
 extern int tls_ex_index_mosq;
 
-int _mosquitto_server_certificate_verify(int preverify_ok, X509_STORE_CTX *ctx)
+int mosquitto__server_certificate_verify(int preverify_ok, X509_STORE_CTX *ctx)
 {
 	/* Preverify should have already checked expiry, revocation.
 	 * We need to verify the hostname. */
@@ -58,10 +59,14 @@ int _mosquitto_server_certificate_verify(int preverify_ok, X509_STORE_CTX *ctx)
 			cert = X509_STORE_CTX_get_current_cert(ctx);
 			/* This is the peer certificate, all others are upwards in the chain. */
 #if defined(WITH_BROKER)
-			return _mosquitto_verify_certificate_hostname(cert, mosq->bridge->addresses[mosq->bridge->cur_address].address);
+			preverify_ok = mosquitto__verify_certificate_hostname(cert, mosq->bridge->addresses[mosq->bridge->cur_address].address);
 #else
-			return _mosquitto_verify_certificate_hostname(cert, mosq->host);
+			preverify_ok = mosquitto__verify_certificate_hostname(cert, mosq->host);
 #endif
+			if (preverify_ok != 1) {
+				log__printf(mosq, MOSQ_LOG_ERR, "Error: host name verification failed.");
+			}
+			return preverify_ok;
 		}else{
 			return preverify_ok;
 		}
@@ -100,7 +105,7 @@ int mosquitto__cmp_hostname_wildcard(char *certname, const char *hostname)
 /* This code is based heavily on the example provided in "Secure Programming
  * Cookbook for C and C++".
  */
-int _mosquitto_verify_certificate_hostname(X509 *cert, const char *hostname)
+int mosquitto__verify_certificate_hostname(X509 *cert, const char *hostname)
 {
 	int i;
 	char name[256];

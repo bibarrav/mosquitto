@@ -23,15 +23,22 @@ Contributors:
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+
 #ifdef WIN32
-#  include <process.h>
+#	include <process.h>
 #	ifndef __cplusplus
-#		define bool char
-#		define true 1
-#		define false 0
+#		if defined(_MSC_VER) && _MSC_VER < 1900
+#			define bool char
+#			define true 1
+#			define false 0
+#		else
+#			include <stdbool.h>
+#		endif
 #	endif
 #   define snprintf sprintf_s
 #	include <io.h>
+#	include <windows.h>
 #else
 #  include <stdbool.h>
 #  include <unistd.h>
@@ -104,7 +111,7 @@ int output_new_password(FILE *fptr, const char *username, const char *password)
 
 	rc = base64_encode(salt, SALT_LEN, &salt64);
 	if(rc){
-		if(salt64) free(salt64);
+		free(salt64);
 		fprintf(stderr, "Error: Unable to encode salt.\n");
 		return 1;
 	}
@@ -112,7 +119,7 @@ int output_new_password(FILE *fptr, const char *username, const char *password)
 
 	digest = EVP_get_digestbyname("sha512");
 	if(!digest){
-		if(salt64) free(salt64);
+		free(salt64);
 		fprintf(stderr, "Error: Unable to create openssl digest.\n");
 		return 1;
 	}
@@ -135,8 +142,8 @@ int output_new_password(FILE *fptr, const char *username, const char *password)
 
 	rc = base64_encode(hash, hash_len, &hash64);
 	if(rc){
-		if(salt64) free(salt64);
-		if(hash64) free(hash64);
+		free(salt64);
+		free(hash64);
 		fprintf(stderr, "Error: Unable to encode hash.\n");
 		return 1;
 	}
@@ -224,7 +231,7 @@ int gets_quiet(char *s, int len)
 {
 #ifdef WIN32
 	HANDLE h;
-	DWORD con_orig, con_quiet;
+	DWORD con_orig, con_quiet = 0;
 	DWORD read_len = 0;
 
 	memset(s, 0, len);
@@ -448,6 +455,10 @@ int main(int argc, char *argv[])
 		}
 
 		backup_file = malloc(strlen(password_file)+5);
+		if(!backup_file){
+			fprintf(stderr, "Error: Out of memory.\n");
+			return 1;
+		}
 		snprintf(backup_file, strlen(password_file)+5, "%s.tmp", password_file);
 
 		if(create_backup(backup_file, fptr)){

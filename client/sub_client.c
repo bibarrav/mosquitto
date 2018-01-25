@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2009-2014 Roger Light <roger@atchoo.org>
+Copyright (c) 2009-2016 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License v1.0
@@ -19,6 +19,7 @@ Contributors:
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #ifndef WIN32
 #include <unistd.h>
 #else
@@ -33,29 +34,263 @@ Contributors:
 bool process_messages = true;
 int msg_count = 0;
 
-void my_message_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *message)
+static int get_time(struct tm **ti, long *ns)
 {
-	struct mosq_config *cfg;
-	int i;
-	bool res;
+#ifdef WIN32
+	SYSTEMTIME st;
+#else
+	struct timespec ts;
+#endif
+	time_t s;
 
-	if(process_messages == false) return;
+#ifdef WIN32
+	s = time(NULL);
 
-	assert(obj);
-	cfg = (struct mosq_config *)obj;
+	GetLocalTime(&st);
+	*ns = st.wMilliseconds*1000000L;
+#else
+	if(clock_gettime(CLOCK_REALTIME, &ts) != 0){
+		fprintf(stderr, "Error obtaining system time.\n");
+		return 1;
+	}
+	s = ts.tv_sec;
+	*ns = ts.tv_nsec;
+#endif
 
-	if(message->retain && cfg->no_retain) return;
-	if(cfg->filter_outs){
-		for(i=0; i<cfg->filter_out_count; i++){
-			mosquitto_topic_matches_sub(cfg->filter_outs[i], message->topic, &res);
-			if(res) return;
-		}
+	*ti = localtime(&s);
+	if(!(*ti)){
+		fprintf(stderr, "Error obtaining system time.\n");
+		return 1;
 	}
 
-	if(cfg->verbose){
+	return 0;
+}
+
+static void write_payload(const unsigned char *payload, int payloadlen, bool hex)
+{
+	int i;
+
+	if(!hex){
+		(void)fwrite(payload, 1, payloadlen, stdout);
+	}else{
+		for(i=0; i<payloadlen; i++){
+			fprintf(stdout, "%x", payload[i]);
+		}
+	}
+}
+
+void write_json_payload(const char *payload, int payloadlen)
+{
+	int i;
+
+	for(i=0; i<payloadlen; i++){
+		if(payload[i] == '"' || payload[i] == '\\' || (payload[i] >=0 && payload[i] < 32)){
+			printf("\\u%04d", payload[i]);
+		}else{
+			fputc(payload[i], stdout);
+		}
+	}
+}
+
+void json_print(const struct mosquitto_message *message, const struct tm *ti, bool escaped)
+{
+	char buf[100];
+
+	strftime(buf, 100, "%s", ti);
+	printf("{\"tst\":%s,\"topic\":\"%s\",\"qos\":%d,\"retain\":%d,\"payloadlen\":%d,", buf, message->topic, message->qos, message->retain, message->payloadlen);
+	if(message->qos > 0){
+		printf("\"mid\":%d,", message->mid);
+	}
+	if(escaped){
+		fputs("\"payload\":\"", stdout);
+		write_json_payload(message->payload, message->payloadlen);
+		fputs("\"}", stdout);
+	}else{
+		fputs("\"payload\":", stdout);
+		write_payload(message->payload, message->payloadlen, false);
+		fputs("}", stdout);
+	}
+}
+
+void formatted_print(const struct mosq_config *cfg, const struct mosquitto_message *message)
+{
+	int len;
+	int i;
+	struct tm *ti = NULL;
+	long ns;
+	char strf[3];
+	char buf[100];
+
+	len = strlen(cfg->format);
+
+	for(i=0; i<len; i++){
+		if(cfg->format[i] == '%'){
+			if(i < len-1){
+				i++;
+				switch(cfg->format[i]){
+					case '%':
+						fputc('%', stdout);
+						break;
+
+					case 'I':
+						if(!ti){
+							if(get_time(&ti, &ns)){
+								fprintf(stderr, "Error obtaining system time.\n");
+								return;
+							}
+						}
+						if(strftime(buf, 100, "%FT%T%z", ti) != 0){
+							fputs(buf, stdout);
+						}
+						break;
+
+					case 'j':
+						if(!ti){
+							if(get_time(&ti, &ns)){
+								fprintf(stderr, "Error obtaining system time.\n");
+								return;
+							}
+						}
+						json_print(message, ti, true);
+						break;
+
+					case 'J':
+						if(!ti){
+							if(get_time(&ti, &ns)){
+								fprintf(stderr, "Error obtaining system time.\n");
+								return;
+							}
+						}
+						json_print(message, ti, false);
+						break;
+
+					case 'l':
+						printf("%d", message->payloadlen);
+						break;
+
+					case 'm':
+						printf("%d", message->mid);
+						break;
+
+					case 'p':
+						write_payload(message->payload, message->payloadlen, false);
+						break;
+
+					case 'q':
+						fputc(message->qos + 48, stdout);
+						break;
+
+					case 'r':
+						if(message->retain){
+							fputc('1', stdout);
+						}else{
+							fputc('0', stdout);
+						}
+						break;
+
+					case 't':
+						fputs(message->topic, stdout);
+						break;
+
+					case 'U':
+						if(!ti){
+							if(get_time(&ti, &ns)){
+								fprintf(stderr, "Error obtaining system time.\n");
+								return;
+							}
+						}
+						if(strftime(buf, 100, "%s", ti) != 0){
+							printf("%s.%09ld", buf, ns);
+						}
+						break;
+
+					case 'x':
+						write_payload(message->payload, message->payloadlen, true);
+						break;
+				}
+			}
+		}else if(cfg->format[i] == '@'){
+			if(i < len-1){
+				i++;
+				if(cfg->format[i] == '@'){
+					fputc('@', stdout);
+				}else{
+					if(!ti){
+						if(get_time(&ti, &ns)){
+							fprintf(stderr, "Error obtaining system time.\n");
+							return;
+						}
+					}
+
+					strf[0] = '%';
+					strf[1] = cfg->format[i];
+					strf[2] = 0;
+
+					if(cfg->format[i] == 'N'){
+						printf("%09ld", ns);
+					}else{
+						if(strftime(buf, 100, strf, ti) != 0){
+							fputs(buf, stdout);
+						}
+					}
+				}
+			}
+		}else if(cfg->format[i] == '\\'){
+			if(i < len-1){
+				i++;
+				switch(cfg->format[i]){
+					case '\\':
+						fputc('\\', stdout);
+						break;
+
+					case '0':
+						fputc('\0', stdout);
+						break;
+
+					case 'a':
+						fputc('\a', stdout);
+						break;
+
+					case 'e':
+						fputc('\033', stdout);
+						break;
+
+					case 'n':
+						fputc('\n', stdout);
+						break;
+
+					case 'r':
+						fputc('\r', stdout);
+						break;
+
+					case 't':
+						fputc('\t', stdout);
+						break;
+
+					case 'v':
+						fputc('\v', stdout);
+						break;
+				}
+			}
+		}else{
+			fputc(cfg->format[i], stdout);
+		}
+	}
+	if(cfg->eol){
+		fputc('\n', stdout);
+	}
+	fflush(stdout);
+}
+
+
+void print_message(struct mosq_config *cfg, const struct mosquitto_message *message)
+{
+	if(cfg->format){
+		formatted_print(cfg, message);
+	}else if(cfg->verbose){
 		if(message->payloadlen){
 			printf("%s ", message->topic);
-			fwrite(message->payload, 1, message->payloadlen, stdout);
+			write_payload(message->payload, message->payloadlen, false);
 			if(cfg->eol){
 				printf("\n");
 			}
@@ -67,13 +302,43 @@ void my_message_callback(struct mosquitto *mosq, void *obj, const struct mosquit
 		fflush(stdout);
 	}else{
 		if(message->payloadlen){
-			fwrite(message->payload, 1, message->payloadlen, stdout);
+			write_payload(message->payload, message->payloadlen, false);
 			if(cfg->eol){
 				printf("\n");
 			}
 			fflush(stdout);
 		}
 	}
+}
+
+
+void my_message_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *message)
+{
+	struct mosq_config *cfg;
+	int i;
+	bool res;
+
+	if(process_messages == false) return;
+
+	assert(obj);
+	cfg = (struct mosq_config *)obj;
+
+	if(cfg->retained_only && !message->retain && process_messages){
+		process_messages = false;
+		mosquitto_disconnect(mosq);
+		return;
+	}
+
+	if(message->retain && cfg->no_retain) return;
+	if(cfg->filter_outs){
+		for(i=0; i<cfg->filter_out_count; i++){
+			mosquitto_topic_matches_sub(cfg->filter_outs[i], message->topic, &res);
+			if(res) return;
+		}
+	}
+
+	print_message(cfg, message);
+
 	if(cfg->msg_count>0){
 		msg_count++;
 		if(cfg->msg_count == msg_count){
@@ -94,6 +359,9 @@ void my_connect_callback(struct mosquitto *mosq, void *obj, int result)
 	if(!result){
 		for(i=0; i<cfg->topic_count; i++){
 			mosquitto_subscribe(mosq, NULL, cfg->topics[i], cfg->qos);
+		}
+		for(i=0; i<cfg->unsub_topic_count; i++){
+			mosquitto_unsubscribe(mosq, NULL, cfg->unsub_topics[i]);
 		}
 	}else{
 		if(result && !cfg->quiet){
@@ -129,8 +397,10 @@ void print_usage(void)
 	mosquitto_lib_version(&major, &minor, &revision);
 	printf("mosquitto_sub is a simple mqtt client that will subscribe to a single topic and print all messages it receives.\n");
 	printf("mosquitto_sub version %s running on libmosquitto %d.%d.%d.\n\n", VERSION, major, minor, revision);
-	printf("Usage: mosquitto_sub [-c] [-h host] [-k keepalive] [-p port] [-q qos] [-R] -t topic ...\n");
-	printf("                     [-C msg_count] [-T filter_out]\n");
+	printf("Usage: mosquitto_sub {[-h host] [-p port] [-u username [-P password]] -t topic | -L URL [-t topic]}\n");
+	printf("                     [-c] [-k keepalive] [-q qos]\n");
+	printf("                     [-C msg_count] [-R] [--retained-only] [-T filter_out] [-U topic ...]\n");
+	printf("                     [-F format]\n");
 #ifdef WITH_SRV
 	printf("                     [-A bind_address] [-S]\n");
 #else
@@ -138,7 +408,6 @@ void print_usage(void)
 #endif
 	printf("                     [-i id] [-I id_prefix]\n");
 	printf("                     [-d] [-N] [--quiet] [-v]\n");
-	printf("                     [-u username [-P password]]\n");
 	printf("                     [--will-topic [--will-payload payload] [--will-qos qos] [--will-retain]]\n");
 #ifdef WITH_TLS
 	printf("                     [{--cafile file | --capath dir} [--cert file] [--key file]\n");
@@ -156,13 +425,16 @@ void print_usage(void)
 	printf(" -c : disable 'clean session' (store subscription and pending messages when client disconnects).\n");
 	printf(" -C : disconnect and exit after receiving the 'msg_count' messages.\n");
 	printf(" -d : enable debug messages.\n");
+	printf(" -F : output format.\n");
 	printf(" -h : mqtt host to connect to. Defaults to localhost.\n");
 	printf(" -i : id to use for this client. Defaults to mosquitto_sub_ appended with the process id.\n");
 	printf(" -I : define the client id as id_prefix appended with the process id. Useful for when the\n");
 	printf("      broker is using the clientid_prefixes option.\n");
 	printf(" -k : keep alive in seconds for this client. Defaults to 60.\n");
+	printf(" -L : specify user, password, hostname, port and topic as a URL in the form:\n");
+	printf("      mqtt(s)://[username[:password]@]host[:port]/topic\n");
 	printf(" -N : do not add an end of line character when printing the payload.\n");
-	printf(" -p : network port to connect to. Defaults to 1883.\n");
+	printf(" -p : network port to connect to. Defaults to 1883 for plain MQTT and 8883 for MQTT over TLS.\n");
 	printf(" -P : provide a password (requires MQTT 3.1 broker)\n");
 	printf(" -q : quality of service level to use for the subscription. Defaults to 0.\n");
 	printf(" -R : do not print stale messages (those with retain set).\n");
@@ -172,11 +444,14 @@ void print_usage(void)
 	printf(" -t : mqtt topic to subscribe to. May be repeated multiple times.\n");
 	printf(" -T : topic string to filter out of results. May be repeated.\n");
 	printf(" -u : provide a username (requires MQTT 3.1 broker)\n");
+	printf(" -U : unsubscribe from a topic. May be repeated.\n");
 	printf(" -v : print published messages verbosely.\n");
 	printf(" -V : specify the version of the MQTT protocol to use when connecting.\n");
-	printf("      Can be mqttv31 or mqttv311. Defaults to mqttv31.\n");
+	printf("      Can be mqttv31 or mqttv311. Defaults to mqttv311.\n");
 	printf(" --help : display this message.\n");
 	printf(" --quiet : don't print error messages.\n");
+	printf(" --retained-only : only handle messages with the retained flag set, and exit when the\n");
+	printf("                   first non-retained message is received.\n");
 	printf(" --will-payload : payload for the client Will, which is sent by the broker in case of\n");
 	printf("                  unexpected disconnection. If not given and will-topic is set, a zero\n");
 	printf("                  length message will be sent.\n");
@@ -216,6 +491,7 @@ int main(int argc, char *argv[])
 	struct mosquitto *mosq = NULL;
 	int rc;
 	
+	memset(&cfg, 0, sizeof(struct mosq_config));
 	rc = client_config_load(&cfg, CLIENT_SUB, argc, argv);
 	if(rc){
 		client_config_cleanup(&cfg);
@@ -225,6 +501,11 @@ int main(int argc, char *argv[])
 		}else{
 			fprintf(stderr, "\nUse 'mosquitto_sub --help' to see usage.\n");
 		}
+		return 1;
+	}
+
+	if(cfg.no_retain && cfg.retained_only){
+		fprintf(stderr, "\nError: Combining '-R' and '--retained-only' makes no sense.\n");
 		return 1;
 	}
 

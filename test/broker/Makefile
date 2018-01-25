@@ -12,7 +12,7 @@ clean :
 test-compile : 
 	$(MAKE) -C c
 
-test : test-compile 01 02 03 04 05 06 07 08 09 10
+test : test-compile 01 02 03 04 05 06 07 08 09 10 11
 
 01 :
 	./01-connect-success.py
@@ -41,17 +41,16 @@ endif
 	./02-unsubscribe-qos0.py
 	./02-unsubscribe-qos1.py
 	./02-unsubscribe-qos2.py
+	./02-unsubscribe-invalid-no-topic.py
 
 03 :
 	./03-publish-qos1.py
 	./03-publish-qos2.py
-	./03-publish-b2c-timeout-qos1.py
 	./03-publish-b2c-disconnect-qos1.py
-	./03-publish-c2b-timeout-qos2.py
 	./03-publish-c2b-disconnect-qos2.py
-	./03-publish-b2c-timeout-qos2.py
 	./03-publish-b2c-disconnect-qos2.py
 	./03-pattern-matching.py
+	./03-publish-qos1-queued-bytes.py
 
 04 :
 	./04-retain-qos0.py
@@ -100,3 +99,5 @@ endif
 10 :
 	./10-listener-mount-point.py
 
+11 :
+	./11-persistent-subscription.py
